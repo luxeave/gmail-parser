@@ -1,0 +1,16 @@
+{
+  "name": "gmail-cleaner",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "googleapis": "^142.0.0",
+    "server-destroy": "^1.0.1"
+  }
+}
