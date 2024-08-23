@@ -104,20 +104,44 @@ async function getInbox(auth, limit = 50) {
     }
 }
 
-async function labelEmail(auth, messageId, label) {
+async function getLabels(auth) {
+    const gmail = google.gmail({ version: 'v1', auth });
+    try {
+        const res = await gmail.users.labels.list({
+            userId: 'me',
+        });
+        return res.data.labels || [];
+    } catch (err) {
+        console.error('Error fetching labels:', err);
+        throw err;
+    }
+}
+
+async function printLabels(labels) {
+    console.log('Available labels:');
+    labels.forEach((label, index) => {
+        console.log(`${index + 1}. ${label.name} (ID: ${label.id})`);
+    });
+}
+
+async function labelEmail(auth, messageId, labelId) {
     const gmail = google.gmail({ version: 'v1', auth });
     try {
         await gmail.users.messages.modify({
             userId: 'me',
             id: messageId,
             requestBody: {
-                addLabelIds: [label],
+                addLabelIds: [labelId],
             },
         });
-        console.log(`Successfully labeled email ${messageId} with ${label}`);
+        console.log(`Successfully labeled email ${messageId} with label ID ${labelId}`);
     } catch (err) {
-        console.error('Error labeling email:', err);
-        throw err;
+        if (err.code === 404) {
+            console.log(`Label with ID ${labelId} not found. Skipping label assignment for email ${messageId}`);
+        } else {
+            console.error('Error labeling email:', err);
+            throw err;
+        }
     }
 }
 
@@ -126,13 +150,17 @@ async function main() {
         console.log('Using credentials file:', CREDENTIALS_PATH);
         const auth = await authorize();
 
+        // Get and print labels
+        const labels = await getLabels(auth);
+        await printLabels(labels);
+
         // Example: Get the 10 most recent emails
         const recentEmails = await getInbox(auth, 10);
         console.log('Recent emails:', recentEmails);
 
-        // Example: Label the first email as "receipt"
-        // if (recentEmails.length > 0) {
-        //     await labelEmail(auth, recentEmails[0].id, 'Receipts');
+        // Example: Label the first email with the first available label
+        // if (recentEmails.length > 0 && labels.length > 0) {
+        //     await labelEmail(auth, recentEmails[0].id, labels[0].id);
         // }
     } catch (err) {
         console.error('Error in main function:', err);
