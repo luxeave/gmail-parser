@@ -104,6 +104,52 @@ async function getInbox(auth, limit = 50) {
     }
 }
 
+async function getEmailDetails(auth, messageId) {
+    const gmail = google.gmail({ version: 'v1', auth });
+    try {
+        const res = await gmail.users.messages.get({
+            userId: 'me',
+            id: messageId,
+            format: 'full',
+        });
+
+        const headers = res.data.payload.headers;
+        const subject = headers.find(header => header.name.toLowerCase() === 'subject')?.value || 'No Subject';
+        let content = 'No content';
+
+        function decodeBody(body) {
+            if (body.data) {
+                return Buffer.from(body.data, 'base64').toString('utf-8');
+            }
+            return '';
+        }
+
+        function getTextPlain(part) {
+            if (part.mimeType === 'text/plain' && part.body) {
+                return decodeBody(part.body);
+            }
+            if (part.parts) {
+                for (let p of part.parts) {
+                    const result = getTextPlain(p);
+                    if (result) return result;
+                }
+            }
+            return '';
+        }
+
+        if (res.data.payload.mimeType === 'text/plain') {
+            content = decodeBody(res.data.payload.body);
+        } else if (res.data.payload.parts) {
+            content = getTextPlain(res.data.payload);
+        }
+
+        return { subject, content };
+    } catch (err) {
+        console.error(`Error fetching details for email ${messageId}:`, err);
+        return { subject: 'Error', content: 'Could not fetch email content' };
+    }
+}
+
 async function getLabels(auth) {
     const gmail = google.gmail({ version: 'v1', auth });
     try {
@@ -157,6 +203,17 @@ async function main() {
         // Example: Get the 10 most recent emails
         const recentEmails = await getInbox(auth, 10);
         console.log('Recent emails:', recentEmails);
+
+        // Fetch and display details for each email
+        for (const email of recentEmails) {
+            const details = await getEmailDetails(auth, email.id);
+            if (details) {
+                console.log('\n-------------------');
+                console.log(`Subject: ${details.subject}`);
+                console.log('Content preview:');
+                console.log(details.content.substring(0, 200) + '...');
+            }
+        }
 
         // Example: Label the first email with the first available label
         // if (recentEmails.length > 0 && labels.length > 0) {
