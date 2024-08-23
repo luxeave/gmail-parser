@@ -4,6 +4,7 @@ const fs = require('fs');
 const http = require('http');
 const url = require('url');
 const destroyer = require('server-destroy');
+const sanitize = require('sanitize-filename');
 
 const CREDENTIALS_PATH = process.env.GMAIL_CREDENTIALS_PATH || path.join(process.cwd(), 'credentials.json');
 const TOKEN_PATH = process.env.GMAIL_TOKEN_PATH || path.join(process.cwd(), 'token.json');
@@ -191,6 +192,146 @@ async function labelEmail(auth, messageId, labelId) {
     }
 }
 
+async function archiveAndTrashEmail(auth, labelId) {
+    const gmail = google.gmail({ version: 'v1', auth });
+
+    try {
+        const res = await gmail.users.messages.list({
+            userId: 'me',
+            labelIds: [labelId],
+            maxResults: 100  // Adjust as needed
+        });
+
+        const messages = res.data.messages || [];
+        const archivedEmails = [];
+
+        // Create main archive folder
+        const archiveFolder = path.join(process.cwd(), 'email_archive');
+        if (!fs.existsSync(archiveFolder)) {
+            fs.mkdirSync(archiveFolder);
+        }
+
+        for (const message of messages) {
+            const emailDetails = await gmail.users.messages.get({
+                userId: 'me',
+                id: message.id,
+                format: 'full'
+            });
+
+            const headers = emailDetails.data.payload.headers;
+            const subject = headers.find(header => header.name.toLowerCase() === 'subject')?.value || 'No Subject';
+            const sender = headers.find(header => header.name.toLowerCase() === 'from')?.value || 'Unknown Sender';
+            const timeReceived = new Date(parseInt(emailDetails.data.internalDate));
+            const formattedDate = timeReceived.toISOString().split('T')[0];
+
+            // Create a sanitized folder name for the email
+            const emailFolderName = sanitize(`${subject}_${formattedDate}`);
+            const emailFolder = path.join(archiveFolder, emailFolderName);
+            fs.mkdirSync(emailFolder, { recursive: true });
+
+            // Extract and save email content
+            const content = getEmailContent(emailDetails.data.payload);
+            const contentWithMetadata = `Subject: ${subject}\nFrom: ${sender}\nDate: ${timeReceived.toISOString()}\n\nContent:\n${content}`;
+            fs.writeFileSync(path.join(emailFolder, 'content.txt'), contentWithMetadata);
+
+            // Handle attachments
+            const attachments = await getAttachments(gmail, 'me', message.id, emailDetails.data.payload);
+            if (attachments.length > 0) {
+                const attachmentsFolder = path.join(emailFolder, 'attachments');
+                fs.mkdirSync(attachmentsFolder, { recursive: true });
+                for (const attachment of attachments) {
+                    const filePath = path.join(attachmentsFolder, attachment.filename);
+                    fs.writeFileSync(filePath, attachment.data);
+                }
+            }
+
+            // Store email metadata
+            const emailMetadata = {
+                id: message.id,
+                subject,
+                sender,
+                timeReceived: timeReceived.toISOString(),
+                hasAttachments: attachments.length > 0
+            };
+            fs.writeFileSync(path.join(emailFolder, 'metadata.json'), JSON.stringify(emailMetadata, null, 2));
+
+            archivedEmails.push(emailMetadata);
+
+            // Move email to trash
+            await gmail.users.messages.trash({
+                userId: 'me',
+                id: message.id
+            });
+
+            console.log(`Archived and trashed email: ${subject}`);
+        }
+
+        console.log(`Archived emails saved to ${archiveFolder}`);
+        return archivedEmails;
+    } catch (error) {
+        console.error('Error in archiveAndTrashEmail:', error);
+        throw error;
+    }
+}
+
+function getEmailContent(payload) {
+    return extractContent(payload);
+}
+
+function extractContent(part, content = '') {
+    if (part.mimeType === 'text/plain' && part.body && part.body.data) {
+        content += Buffer.from(part.body.data, 'base64').toString('utf-8');
+    } else if (part.mimeType === 'text/html' && part.body && part.body.data) {
+        const htmlContent = Buffer.from(part.body.data, 'base64').toString('utf-8');
+        content += `\n\n[HTML Content]\n${htmlContent}\n[End HTML Content]\n\n`;
+    }
+
+    if (part.parts) {
+        for (let subPart of part.parts) {
+            content = extractContent(subPart, content);
+        }
+    }
+
+    return content || 'No readable content';
+}
+
+async function getAttachments(gmail, userId, messageId, payload) {
+    const attachments = [];
+
+    async function processMessagePart(part) {
+        if (part.filename && part.body) {
+            if (part.body.attachmentId) {
+                const attachment = await gmail.users.messages.attachments.get({
+                    userId: userId,
+                    messageId: messageId,
+                    id: part.body.attachmentId
+                });
+
+                attachments.push({
+                    filename: part.filename,
+                    mimeType: part.mimeType,
+                    data: Buffer.from(attachment.data.data, 'base64')
+                });
+            } else if (part.body.data) {
+                attachments.push({
+                    filename: part.filename,
+                    mimeType: part.mimeType,
+                    data: Buffer.from(part.body.data, 'base64')
+                });
+            }
+        }
+
+        if (part.parts) {
+            for (let subPart of part.parts) {
+                await processMessagePart(subPart);
+            }
+        }
+    }
+
+    await processMessagePart(payload);
+    return attachments;
+}
+
 async function main() {
     try {
         console.log('Using credentials file:', CREDENTIALS_PATH);
@@ -216,9 +357,14 @@ async function main() {
         }
 
         // Example: Label the first email with the first available label
-        // if (recentEmails.length > 0 && labels.length > 0) {
-        //     await labelEmail(auth, recentEmails[0].id, labels[0].id);
-        // }
+        if (recentEmails.length > 0 && labels.length > 0) {
+            await labelEmail(auth, recentEmails[0].id, labels[0].id);
+        }
+
+        const labelId = 'Label_10'; // Replace with actual label ID
+        archiveAndTrashEmail(auth, labelId)
+            .then(archivedEmails => console.log(`Archived ${archivedEmails.length} emails`))
+            .catch(error => console.error('Error archiving emails:', error));
     } catch (err) {
         console.error('Error in main function:', err);
     }
