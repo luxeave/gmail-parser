@@ -11,6 +11,7 @@
   "license": "ISC",
   "dependencies": {
     "googleapis": "^142.0.0",
+    "sanitize-filename": "^1.6.3",
     "server-destroy": "^1.0.1"
   }
 }
